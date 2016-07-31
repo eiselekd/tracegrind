@@ -43,6 +43,88 @@ static ULong g_guest_instrs_executed = 0;
 #define mkU64(_n)                IRExpr_Const(IRConst_U64(_n))
 #define assign(_t, _e)           IRStmt_WrTmp((_t), (_e))
 
+static VG_REGPARM(2)
+void dh_handle_read ( Addr addr, UWord szB )
+{
+   Block* bk = find_Block_containing(addr);
+   if (bk) {
+      bk->n_reads += szB;
+      if (bk->histoW)
+         inc_histo_for_block(bk, addr, szB);
+   }
+}
+
+
+void addMemEvent(IRSB* sbOut, Bool isWrite, Int szB, IRExpr* addr,
+                 Int goff_sp)
+{
+   IRType   tyAddr   = Ity_INVALID;
+   const HChar* hName= NULL;
+   void*    hAddr    = NULL;
+   IRExpr** argv     = NULL;
+   IRDirty* di       = NULL;
+
+   const Int THRESH = 4096 * 4; // somewhat arbitrary
+   const Int rz_szB = VG_STACK_REDZONE_SZB;
+
+   tyAddr = typeOfIRExpr( sbOut->tyenv, addr );
+   tl_assert(tyAddr == Ity_I32 || tyAddr == Ity_I64);
+
+   {
+      hName = "dh_handle_read";
+      hAddr = &dh_handle_read;
+   }
+
+   argv = mkIRExprVec_2( addr, mkIRExpr_HWord(szB) );
+
+   /* Add the helper. */
+   tl_assert(hName);
+   tl_assert(hAddr);
+   tl_assert(argv);
+   di = unsafeIRDirty_0_N( 2/*regparms*/,
+                           hName, VG_(fnptr_to_fnentry)( hAddr ),
+                           argv );
+
+   /* Generate the guard condition: "(addr - (SP - RZ)) >u N", for
+      some arbitrary N.  If that fails then addr is in the range (SP -
+      RZ .. SP + N - RZ).  If N is smallish (a page?) then we can say
+      addr is within a page of SP and so can't possibly be a heap
+      access, and so can be skipped. */
+   IRTemp sp = newIRTemp(sbOut->tyenv, tyAddr);
+   addStmtToIRSB( sbOut, assign(sp, IRExpr_Get(goff_sp, tyAddr)));
+
+   IRTemp sp_minus_rz = newIRTemp(sbOut->tyenv, tyAddr);
+   addStmtToIRSB(
+      sbOut,
+      assign(sp_minus_rz,
+             tyAddr == Ity_I32
+                ? binop(Iop_Sub32, mkexpr(sp), mkU32(rz_szB))
+                : binop(Iop_Sub64, mkexpr(sp), mkU64(rz_szB)))
+   );
+
+   IRTemp diff = newIRTemp(sbOut->tyenv, tyAddr);
+   addStmtToIRSB(
+      sbOut,
+      assign(diff,
+             tyAddr == Ity_I32
+                ? binop(Iop_Sub32, addr, mkexpr(sp_minus_rz))
+                : binop(Iop_Sub64, addr, mkexpr(sp_minus_rz)))
+   );
+
+   IRTemp guard = newIRTemp(sbOut->tyenv, Ity_I1);
+   addStmtToIRSB(
+      sbOut,
+      assign(guard,
+             tyAddr == Ity_I32
+                ? binop(Iop_CmpLT32U, mkU32(THRESH), mkexpr(diff))
+                : binop(Iop_CmpLT64U, mkU64(THRESH), mkexpr(diff)))
+   );
+   di->guard = mkexpr(guard);
+
+   addStmtToIRSB( sbOut, IRStmt_Dirty(di) );
+}
+
+
 static
 void add_counter_update(IRSB* sbOut, Int n)
 {
