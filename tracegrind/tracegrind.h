@@ -2,5 +2,6 @@
 #define TRACEGRIND_H_
 
 #include "valgrind.h"
+#include <sys/syscall.h>
 
 #endif

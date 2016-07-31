@@ -178,6 +178,9 @@
 #include "pub_tool_options.h"
 #include "pub_tool_machine.h"     // VG_(fnptr_to_fnentry)
 
+#include <sys/syscall.h>
+
+
 /*------------------------------------------------------------*/
 /*--- Command line options                                 ---*/
 /*------------------------------------------------------------*/
@@ -453,11 +456,18 @@ typedef
 static Event events[N_EVENTS];
 static Int   events_used = 0;
 
+//#define PRINT_INSN
 
 static VG_REGPARM(2) void trace_instr(Addr addr, SizeT size)
 {
 #ifdef PRINT_INSN
-   VG_(printf)("I  %08lx,%lu\n", addr, size);
+  int i;
+  VG_(printf)("I  %08lx,%lu", addr, size);
+  for (i = 0; i < size; i++) {
+    VG_(printf)(" %02x", ((unsigned char*)addr)[i]);
+  }
+  VG_(printf)("\n");
+
 #endif
 }
 
@@ -1052,6 +1062,44 @@ static void lk_fini(Int exitcode)
    }
 }
 
+static
+void lk_new_mem_mmap ( Addr a, SizeT len, Bool rr, Bool ww, Bool xx,
+                       ULong di_handle )
+{
+  VG_(printf)("M %lx %s %llu\n", a, xx ? "xx" : "  ", di_handle);
+}
+
+static
+void lk_pre_syscall(ThreadId tid, UInt syscallno,
+                           UWord* args, UInt nArgs)
+{
+  if (syscallno == 3) { /* close */
+    //UWord p = args[0];
+    //VG_(printf)("C %lu\n", p);
+  }
+}
+
+static
+void lk_post_syscall(ThreadId tid, UInt syscallno,
+		     UWord* args, UInt nArgs, SysRes res)
+{
+  switch ((int)syscallno) {
+    case __NR_mmap:
+      { /* mmap */
+	VG_(printf)("M %lx fd: %ld, off: %lx => 0x%lx\n", args[0], args[4], args[5], res._val);
+      }
+      break;
+    case __NR_open:
+    case __NR_openat:
+      { /* open */
+	UWord p = args[0];
+	VG_(printf)("O %s => %lu\n", (char*)p, res._val);
+      }
+      break;
+  };
+}
+
+
 static void lk_pre_clo_init(void)
 {
    VG_(details_name)            ("Lackey");
@@ -1068,6 +1116,14 @@ static void lk_pre_clo_init(void)
    VG_(needs_command_line_options)(lk_process_cmd_line_option,
                                    lk_print_usage,
                                    lk_print_debug_usage);
+
+   VG_(track_new_mem_mmap)        ( lk_new_mem_mmap );
+
+   VG_(needs_syscall_wrapper)(lk_pre_syscall,
+			      lk_post_syscall);
+
+
+
 }
 
 VG_DETERMINE_INTERFACE_VERSION(lk_pre_clo_init)
