@@ -74,6 +74,7 @@ void add_counter_update(IRSB* sbOut, Int n)
 
 static void TRC_(post_clo_init)(void)
 {
+
 }
 
 IRSB* TRC_(instrument)( VgCallbackClosure* closure,
