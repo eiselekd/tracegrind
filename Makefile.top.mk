@@ -5,6 +5,9 @@ all:
 configure:
 	./configure --prefix=$(HOME)/bin/tracegrind --enable-inner
 
+run:
+	#--smc-check=all-non-fil
+
 build:
 	make
 
