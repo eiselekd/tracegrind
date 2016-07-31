@@ -8,7 +8,7 @@ int main ( void )
 {
   int i;
   short sum;
-  for (i = 0; i < 7; i++) {
+  for (i = 0; i < 8; i++) {
      sum += a[i] * b[i];
   }
   return 1 & ((unsigned int)sum / 1000000);

@@ -35,7 +35,7 @@
 /* #undef DISABLE_PTHREAD_SPINLOCK_INTERCEPT */
 
 /* configured to run as an inner Valgrind */
-/* #undef ENABLE_INNER */
+#define ENABLE_INNER 1
 
 /* path to GDB */
 #define GDB_PATH "/usr/bin/gdb"
