@@ -456,7 +456,7 @@ typedef
 static Event events[N_EVENTS];
 static Int   events_used = 0;
 
-//#define PRINT_INSN
+#define PRINT_INSN
 
 static VG_REGPARM(2) void trace_instr(Addr addr, SizeT size)
 {
@@ -1066,13 +1066,19 @@ static
 void lk_new_mem_mmap ( Addr a, SizeT len, Bool rr, Bool ww, Bool xx,
                        ULong di_handle )
 {
-  VG_(printf)("M %lx %s %llu\n", a, xx ? "xx" : "  ", di_handle);
+  //VG_(printf)("M %lx %s %llu\n", a, xx ? "xx" : "  ", di_handle);
 }
 
 static
 void lk_pre_syscall(ThreadId tid, UInt syscallno,
                            UWord* args, UInt nArgs)
 {
+  switch ((int)syscallno) {
+  case __NR_write:
+    {
+    }
+    break;
+  }
   if (syscallno == 3) { /* close */
     //UWord p = args[0];
     //VG_(printf)("C %lu\n", p);
@@ -1086,14 +1092,25 @@ void lk_post_syscall(ThreadId tid, UInt syscallno,
   switch ((int)syscallno) {
     case __NR_mmap:
       { /* mmap */
-	VG_(printf)("M %lx fd: %ld, off: %lx => 0x%lx\n", args[0], args[4], args[5], res._val);
+	//VG_(printf)("M %lx fd: %ld, off: %lx => 0x%lx\n", args[0], args[4], args[5], res._val);
       }
+      break;
+    case __NR_write:
       break;
     case __NR_open:
     case __NR_openat:
       { /* open */
 	UWord p = args[0];
 	VG_(printf)("O %s => %lu\n", (char*)p, res._val);
+
+	/*if (!VG_(strncmp)(p,"WARNING: [IP_Flow 19-3019] License 'tcc_encoder_3gpplte@2013.03' (Source) is insufficient",n)) */ {
+	  ExeContext *ec = VG_(record_ExeContext)( VG_(get_running_tid)(), 0 );
+	  //ec->n_ips = 32;
+	  VG_(pp_ExeContext) ( ec );
+
+	}
+
+
       }
       break;
   };
