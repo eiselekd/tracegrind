@@ -42,11 +42,108 @@
 #include "pub_tool_tooliface.h"
 #include "pub_tool_xarray.h"
 #include "pub_tool_libcprint.h"     // VG_(message)
+#include "pub_tool_wordfm.h"
 
 #include "tnt_include.h"
 
 VgHashTable *TNT_(malloc_list)  = NULL;   // HP_Chunks
 VgHashTable *TNT_(malloc_snap)  = NULL;   // HP_Chunks
+
+/* Tracks information about live blocks. */
+typedef
+   struct {
+      Addr        payload;
+      SizeT       req_szB;
+      ExeContext* ap;  /* allocation ec */
+      ULong       allocd_at; /* instruction number */
+      ULong       n_reads;
+      ULong       n_writes;
+      /* Approx histogram, one byte per payload byte.  Counts latch up
+         therefore at 0xFFFF.  Can be NULL if the block is resized or if
+         the block is larger than HISTOGRAM_SIZE_LIMIT. */
+      UShort*     histoW; /* [0 .. req_szB-1] */
+   }
+   Block;
+
+/* May not contain zero-sized blocks.  May not contain
+   overlapping blocks. */
+static WordFM* interval_tree = NULL;  /* WordFM* Block* void */
+
+/* Here's the comparison function.  Since the tree is required
+to contain non-zero sized, non-overlapping blocks, it's good
+enough to consider any overlap as a match. */
+static Word interval_tree_Cmp ( UWord k1, UWord k2 )
+{
+   Block* b1 = (Block*)k1;
+   Block* b2 = (Block*)k2;
+   tl_assert(b1->req_szB > 0);
+   tl_assert(b2->req_szB > 0);
+   if (b1->payload + b1->req_szB <= b2->payload) return -1;
+   if (b2->payload + b2->req_szB <= b1->payload) return  1;
+   return 0;
+}
+
+static Block* fbc_cache0 = NULL;
+static Block* fbc_cache1 = NULL;
+
+//static UWord stats__n_fBc_cached = 0;
+static UWord stats__n_fBc_uncached = 0;
+static UWord stats__n_fBc_notfound = 0;
+
+static Block* find_Block_containing ( Addr a )
+{
+   Block fake;
+   fake.payload = a;
+   fake.req_szB = 1;
+   UWord foundkey = 1;
+   UWord foundval = 1;
+   Bool found = VG_(lookupFM)( interval_tree,
+                               &foundkey, &foundval, (UWord)&fake );
+   if (!found) {
+      stats__n_fBc_notfound++;
+      return NULL;
+   }
+   tl_assert(foundval == 0); // we don't store vals in the interval tree
+   tl_assert(foundkey != 1);
+   Block* res = (Block*)foundkey;
+   tl_assert(res != &fake);
+   // put at the top position
+   fbc_cache1 = fbc_cache0;
+   fbc_cache0 = res;
+   stats__n_fBc_uncached++;
+   return res;
+}
+
+void snapshot_heap_isinside(Addr p) {
+  /*Block *b = */ find_Block_containing ( p );
+  
+}
+
+void snapshot_heap_init(void) {
+
+  interval_tree = VG_(newFM)( VG_(malloc),
+			      "tnt.main.interval_tree.1",
+			      VG_(free),
+			      interval_tree_Cmp );
+}
+
+static void snapshot_add_range(void* p, SizeT req_szB) {
+  
+  // Make new HP_Chunk node, add to malloc_list
+   Block* bk = VG_(malloc)("dh.new_block.1", sizeof(Block));
+   bk->payload   = (Addr)p;
+   bk->req_szB   = req_szB;
+   bk->ap        = 0; //VG_(record_ExeContext)(tid, 0/*first word delta*/);
+   bk->allocd_at = 0; //g_guest_instrs_executed;
+   bk->n_reads   = 0;
+   bk->n_writes  = 0;
+   // set up histogram array, if the block isn't too large
+   bk->histoW = NULL;
+   
+   Bool present = VG_(addToFM)( interval_tree, (UWord)bk, (UWord)0/*no val*/);
+   tl_assert(!present);
+   
+}
 
 void snapshot_heap_rm(void) {
   void *p;
@@ -63,6 +160,7 @@ void snapshot_heap_rm(void) {
 }
 
 void snapshot_heap(void) {
+  
   snapshot_heap_rm();
 
   /* copy current snap */
@@ -75,6 +173,8 @@ void snapshot_heap(void) {
     hc->slop_szB = hd->slop_szB;
     hc->data     = hd->data;
     VG_(HT_add_node)(TNT_(malloc_snap), hc);
+    
+    snapshot_add_range((void*)hd->data, hc->req_szB);
   }
 }
 
@@ -87,9 +187,9 @@ void* record_block( ThreadId tid, void* p, SizeT req_szB, SizeT slop_szB )
    hc->slop_szB = slop_szB;
    hc->data     = (Addr)p;
    VG_(HT_add_node)(TNT_(malloc_list), hc);
-
+   
    //VG_(printf)("+ 0x%lx \n", (long)p);
-
+   
    // Untaint malloc'd block
    TNT_(make_mem_untainted)( (Addr)p, hc->req_szB + hc->slop_szB ); 
 

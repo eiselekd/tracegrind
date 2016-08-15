@@ -287,8 +287,10 @@ TNT_Chunk* TNT_(get_freed_list_head)( void );
    MALLOCLIKE_BLOCK. */
 extern VgHashTable *TNT_(malloc_list);
 extern VgHashTable *TNT_(malloc_snap);
+extern void snapshot_heap_init(void);
 extern void snapshot_heap(void);
 extern void snapshot_heap_rm(void);
+extern void snapshot_heap_isinside(Addr p);
 
 /* For tracking memory pools. */
 //extern VgHashTable TNT_(mempool_list);
