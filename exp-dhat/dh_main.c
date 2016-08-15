@@ -3,7 +3,7 @@
 //--- DHAT: a Dynamic Heap Analysis Tool                 dh_main.c ---*/
 //--------------------------------------------------------------------*/
 
-/*
+/* 
    This file is part of DHAT, a Valgrind tool for profiling the
    heap usage of programs.
 
@@ -43,6 +43,7 @@
 #include "pub_tool_wordfm.h"
 #include "pub_tool_debuginfo.h"     // VG_(get_dataname_and_offset)
 #include "pub_tool_execontext.h"
+#include "pub_tool_threadstate.h"
 
 #define HISTOGRAM_SIZE_LIMIT 1024
 
