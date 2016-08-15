@@ -5652,6 +5652,9 @@ static void tnt_pre_clo_init(void)
 
    // Taintgrind: Needed for tnt_malloc_wrappers.c
    TNT_(malloc_list)  = VG_(HT_construct)( "TNT_(malloc_list)" );
+   TNT_(malloc_snap)  = VG_(HT_construct)( "TNT_(malloc_snap)" );
+
+   
 //   TNT_(mempool_list) = VG_(HT_construct)( "TNT_(mempool_list)" );
 
 //   VG_(track_new_mem_mmap)        ( tnt_new_mem_mmap );

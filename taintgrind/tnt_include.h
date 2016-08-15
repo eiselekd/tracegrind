@@ -286,6 +286,9 @@ TNT_Chunk* TNT_(get_freed_list_head)( void );
    This can occur if a user marks a malloc() block as also a custom block with
    MALLOCLIKE_BLOCK. */
 extern VgHashTable *TNT_(malloc_list);
+extern VgHashTable *TNT_(malloc_snap);
+extern void snapshot_heap(void);
+extern void snapshot_heap_rm(void);
 
 /* For tracking memory pools. */
 //extern VgHashTable TNT_(mempool_list);

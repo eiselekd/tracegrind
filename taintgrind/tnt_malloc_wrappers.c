@@ -41,10 +41,42 @@
 #include "pub_tool_replacemalloc.h"
 #include "pub_tool_tooliface.h"
 #include "pub_tool_xarray.h"
+#include "pub_tool_libcprint.h"     // VG_(message)
 
 #include "tnt_include.h"
 
 VgHashTable *TNT_(malloc_list)  = NULL;   // HP_Chunks
+VgHashTable *TNT_(malloc_snap)  = NULL;   // HP_Chunks
+
+void snapshot_heap_rm(void) {
+  void *p;
+  /* clear last snap */
+  while(1) {
+    VG_(HT_ResetIter) ( TNT_(malloc_snap) );
+    if (!(p = VG_(HT_Next) ( TNT_(malloc_snap) )))
+      break;
+    HP_Chunk *hd = (HP_Chunk *)p;
+    HP_Chunk* hc = VG_(HT_remove)(TNT_(malloc_snap), (UWord)hd->data);
+    tl_assert(hc == hd);
+    VG_(free)( hd );  hd = NULL;
+  }
+}
+
+void snapshot_heap(void) {
+  snapshot_heap_rm();
+
+  /* copy current snap */
+  VG_(HT_ResetIter) ( TNT_(malloc_list) );
+  void *p;
+  while ((p = VG_(HT_Next) ( TNT_(malloc_list) ))) {
+    HP_Chunk *hd = (HP_Chunk *)p;
+    HP_Chunk* hc = VG_(malloc)("tnt.malloc_snap_wrapper.rb.1", sizeof(HP_Chunk));
+    hc->req_szB  = hd->req_szB;
+    hc->slop_szB = hd->slop_szB;
+    hc->data     = hd->data;
+    VG_(HT_add_node)(TNT_(malloc_snap), hc);
+  }
+}
 
 static
 void* record_block( ThreadId tid, void* p, SizeT req_szB, SizeT slop_szB )
@@ -55,6 +87,8 @@ void* record_block( ThreadId tid, void* p, SizeT req_szB, SizeT slop_szB )
    hc->slop_szB = slop_szB;
    hc->data     = (Addr)p;
    VG_(HT_add_node)(TNT_(malloc_list), hc);
+
+   //VG_(printf)("+ 0x%lx \n", (long)p);
 
    // Untaint malloc'd block
    TNT_(make_mem_untainted)( (Addr)p, hc->req_szB + hc->slop_szB ); 

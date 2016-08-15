@@ -34,12 +34,15 @@
 #include "pub_tool_libcbase.h"
 #include "pub_tool_libcassert.h"
 #include "pub_tool_libcprint.h"
+#include "pub_tool_libcfile.h"
 #include "pub_tool_machine.h"      // VG_(fnptr_to_fnentry)
 #include "pub_tool_mallocfree.h"
 #include "pub_tool_options.h"
 #include "pub_tool_replacemalloc.h"
 #include "pub_tool_tooliface.h"
 #include "pub_tool_wordfm.h"
+#include "pub_tool_debuginfo.h"     // VG_(get_dataname_and_offset)
+#include "pub_tool_execontext.h"
 
 #define HISTOGRAM_SIZE_LIMIT 1024
 
@@ -48,7 +51,7 @@
 //--- Globals                                              ---//
 //------------------------------------------------------------//
 
-// Number of guest instructions executed so far.  This is 
+// Number of guest instructions executed so far.  This is
 // incremented directly from the generated code.
 static ULong g_guest_instrs_executed = 0;
 
@@ -112,14 +115,14 @@ static UWord stats__n_fBc_notfound = 0;
 static Block* find_Block_containing ( Addr a )
 {
    if (LIKELY(fbc_cache0
-              && fbc_cache0->payload <= a 
+              && fbc_cache0->payload <= a
               && a < fbc_cache0->payload + fbc_cache0->req_szB)) {
       // found at 0
       stats__n_fBc_cached++;
       return fbc_cache0;
    }
    if (LIKELY(fbc_cache1
-              && fbc_cache1->payload <= a 
+              && fbc_cache1->payload <= a
               && a < fbc_cache1->payload + fbc_cache1->req_szB)) {
       // found at 1; swap 0 and 1
       Block* tmp = fbc_cache0;
@@ -203,7 +206,7 @@ typedef
          has only ever allocated blocks of one size.
 
          3 states:
-            Unknown          because no retirement yet 
+            Unknown          because no retirement yet
             Exactly xsize    all retiring blocks are of this size
             Mixed            multiple different sizes seen
       */
@@ -602,7 +605,7 @@ void* renew_block ( ThreadId tid, void* p_old, SizeT new_req_szB )
 
       // and re-add
       Bool present
-         = VG_(addToFM)( interval_tree, (UWord)bk, (UWord)0/*no val*/); 
+         = VG_(addToFM)( interval_tree, (UWord)bk, (UWord)0/*no val*/);
       tl_assert(!present);
       fbc_cache0 = fbc_cache1 = NULL;
 
@@ -670,10 +673,10 @@ static void* dh_realloc ( ThreadId tid, void* p_old, SizeT new_szB )
 }
 
 static SizeT dh_malloc_usable_size ( ThreadId tid, void* p )
-{                                                            
+{
    Block* bk = find_Block_containing( (Addr)p );
    return bk ? bk->req_szB : 0;
-}                                                            
+}
 
 
 //------------------------------------------------------------//
@@ -697,22 +700,124 @@ void inc_histo_for_block ( Block* bk, Addr addr, UWord szB )
    }
 }
 
-static VG_REGPARM(2)
-void dh_handle_write ( Addr addr, UWord szB )
+/* Return true iff [aSmall,aSmall+nSmall) is entirely contained
+   within [aBig,aBig+nBig). */
+inline
+static Bool is_subinterval_of ( Addr aBig, SizeT nBig,
+                                Addr aSmall, SizeT nSmall ) {
+   tl_assert(nBig > 0 && nSmall > 0);
+   return aBig <= aSmall && aSmall + nSmall <= aBig + nBig;
+}
+
+#define RC5_16_P        0xB7E1
+#define RC5_16_Q        0x9E37
+#define RC5_32_P        0xB7E15163L
+#define RC5_32_Q        0x9E3779B9L
+#define RC5_64_P        0xB7E151628AED2A6BLL
+#define RC5_64_Q        0x9E3779B97F4A7C15LL
+
+//static const char *searchfor = "Intelliprop";
+static const char searchfor[] = { //0xD9, 0x1E, 0xA5, 0x73, 0xA0, 0xC5 //0x32,0x90,0x82,0xb9,0x74,0x69
+				  //0x57, 0xD2, 0x68, 0x0C, 0x0A, 0xD2 //8CFC2F0842DA67E5791207B8178042918DD7FC23B284D13A
+  //0xd4, 0x0e, 0xec, 0x1b, 0x83, 0xad
+  //0xa4, 0x06, 0x3e, 0x88 , 0x19, 0x16, 0xd4, 0x0e
+  //0xB9 , 0x79 , 0x37 , 0x9E
+  0x96, 0xe8, 0xdf, 0xd8, 0x35, 0x4f, 0xb2, 0x28
+  //0xc5,0x2c,0xce,0x3d,0xd5,0x6c,0x7f,0x23
+  //0x20,0xda,0x66,0x28,0xc9,0x01,0xb9,0xab,0xba,0x6d,0xd1,0x22,0x04,0x57,0x1b,0x37
+
+
+  //'P','L','D',' ', 'A','p','p','l','i','c','a'
+  //Diff_C
+  //'D','i','f','f','_','C'
+
+  //0x7f, 0xdd , 0x28 , 0x20 , 0x9a , 0x83
+
+				  //0xD9, 0x1E, 0xA5, 0x73, 0xA0, 0xC5
+				 /*0x9f, 0x7d , 0xf6 , 0x31 , 0x7e , 0x9e , 0x7d , 0x66 , 0xfd , 0x73*/};
+
+
+static VG_REGPARM(3)
+  void dh_handle_write ( Addr addr, UWord szB, Addr ip )
 {
    Block* bk = find_Block_containing(addr);
    if (bk) {
+
+
+     /*
+     if ((addr > (0x82aaf0 + 0x5ebc000)) &&
+	 (addr < (0x82abf0 + 0x5ebc000))) {
+	   ExeContext *ec = VG_(record_ExeContext)( VG_(get_running_tid)(), 0 );
+	   //ec->n_ips = 32;
+	   VG_(pp_ExeContext) ( ec );
+	   VG_(printf)(" ---------------- -----------  found %08lx  @ %08lx --------\n", addr, ip);
+	   //while (1);
+     }
+     */
+
+     /*
+     if ((VG_(memcmp)(((char*)addr), searchfor, 4) == 0)) {
+       char b[1];
+       ExeContext *ec = VG_(record_ExeContext)( VG_(get_running_tid)(), 0 );
+       //ec->n_ips = 32;
+       VG_(pp_ExeContext) ( ec );
+       VG_(printf)(" ---------------- -----------  found %08lx  @ %08lx --------\n", addr, ip);
+     }
+     */
+
+
+
+     if (is_subinterval_of(bk->payload, bk->req_szB, addr-7, 8)) {
+       int i = 0;
+       for (i = 0; i <= 8; i++) {
+	 if ((VG_(memcmp)(((char*)addr)+ i-7, searchfor, 8) == 0)) {
+	   //char b[1];
+	   ExeContext *ec = VG_(record_ExeContext)( VG_(get_running_tid)(), 0 );
+	   //ec->n_ips = 32;
+	   VG_(pp_ExeContext) ( ec );
+	   VG_(printf)(" ---------------- -----------  found write %08lx  @ %08lx --------\n", addr, ip);
+	   //while(1) {}
+	 }
+       }
+     }
+
+
       bk->n_writes += szB;
       if (bk->histoW)
          inc_histo_for_block(bk, addr, szB);
    }
 }
 
-static VG_REGPARM(2)
-void dh_handle_read ( Addr addr, UWord szB )
+static VG_REGPARM(3)
+void dh_handle_read ( Addr addr, UWord szB, Addr ip )
 {
    Block* bk = find_Block_containing(addr);
    if (bk) {
+
+       /*
+       if ((VG_(memcmp)(((char*)addr), searchfor, 4) == 0)) {
+	 char b[1];
+	 ExeContext *ec = VG_(record_ExeContext)( VG_(get_running_tid)(), 0 );
+	 VG_(pp_ExeContext) ( ec );
+	 VG_(printf)(" ---------------- read found %08lx  @ %08lx --------\n", addr, ip);
+	 }*/
+
+
+     if (is_subinterval_of(bk->payload, bk->req_szB, addr-7, 8)) {
+       int i = 0;
+       for (i = 0; i <= 8; i++) {
+	 if ((VG_(memcmp)(((char*)addr)+ i-7, searchfor, 8) == 0)) {
+	   //char b[1];
+	   ExeContext *ec = VG_(record_ExeContext)( VG_(get_running_tid)(), 0 );
+	   //ec->n_ips = 32;
+	   VG_(pp_ExeContext) ( ec );
+	   VG_(printf)(" ---------------- -----------  found read %08lx  @ %08lx --------\n", addr, ip);
+	   //while(1) {}
+	 }
+       }
+     }
+
+
       bk->n_reads += szB;
       if (bk->histoW)
          inc_histo_for_block(bk, addr, szB);
@@ -731,7 +836,7 @@ void dh_handle_noninsn_read ( CorePart part, ThreadId tid, const HChar* s,
 {
    switch (part) {
       case Vg_CoreSysCall:
-         dh_handle_read(base, size);
+	 dh_handle_read(base, size, 0);
          break;
       case Vg_CoreSysCallArgInMem:
          break;
@@ -748,7 +853,7 @@ void dh_handle_noninsn_write ( CorePart part, ThreadId tid,
 {
    switch (part) {
       case Vg_CoreSysCall:
-         dh_handle_write(base, size);
+	dh_handle_write(base, size, 0);
          break;
       case Vg_CoreSignal:
          break;
@@ -797,7 +902,7 @@ void add_counter_update(IRSB* sbOut, Int n)
 
 static
 void addMemEvent(IRSB* sbOut, Bool isWrite, Int szB, IRExpr* addr,
-                 Int goff_sp)
+                 Int goff_sp, Addr ip)
 {
    IRType   tyAddr   = Ity_INVALID;
    const HChar* hName= NULL;
@@ -819,13 +924,13 @@ void addMemEvent(IRSB* sbOut, Bool isWrite, Int szB, IRExpr* addr,
       hAddr = &dh_handle_read;
    }
 
-   argv = mkIRExprVec_2( addr, mkIRExpr_HWord(szB) );
+   argv = mkIRExprVec_3( addr, mkIRExpr_HWord(szB), mkIRExpr_HWord(ip) );
 
    /* Add the helper. */
    tl_assert(hName);
    tl_assert(hAddr);
    tl_assert(argv);
-   di = unsafeIRDirty_0_N( 2/*regparms*/,
+   di = unsafeIRDirty_0_N( 3/*regparms*/,
                            hName, VG_(fnptr_to_fnentry)( hAddr ),
                            argv );
 
@@ -850,7 +955,7 @@ void addMemEvent(IRSB* sbOut, Bool isWrite, Int szB, IRExpr* addr,
    addStmtToIRSB(
       sbOut,
       assign(diff,
-             tyAddr == Ity_I32 
+             tyAddr == Ity_I32
                 ? binop(Iop_Sub32, addr, mkexpr(sp_minus_rz))
                 : binop(Iop_Sub64, addr, mkexpr(sp_minus_rz)))
    );
@@ -859,7 +964,7 @@ void addMemEvent(IRSB* sbOut, Bool isWrite, Int szB, IRExpr* addr,
    addStmtToIRSB(
       sbOut,
       assign(guard,
-             tyAddr == Ity_I32 
+             tyAddr == Ity_I32
                 ? binop(Iop_CmpLT32U, mkU32(THRESH), mkexpr(diff))
                 : binop(Iop_CmpLT64U, mkU64(THRESH), mkexpr(diff)))
    );
@@ -877,6 +982,7 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
                       IRType gWordTy, IRType hWordTy )
 {
    Int   i, n = 0;
+   Addr ip = 0;
    IRSB* sbOut;
    IRTypeEnv* tyenv = sbIn->tyenv;
 
@@ -886,7 +992,7 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
    // - just before any Ist_Exit statements;
    // - just before the IRSB's end.
    // In the former case, we zero 'n' and then continue instrumenting.
-   
+
    sbOut = deepCopyIRSBExceptStmts(sbIn);
 
    // Copy verbatim any IR preamble preceding the first IMark
@@ -895,15 +1001,16 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
       addStmtToIRSB( sbOut, sbIn->stmts[i] );
       i++;
    }
-   
+
    for (/*use current i*/; i < sbIn->stmts_used; i++) {
       IRStmt* st = sbIn->stmts[i];
-      
+
       if (!st || st->tag == Ist_NoOp) continue;
 
       switch (st->tag) {
 
          case Ist_IMark: {
+	    ip  = st->Ist.IMark.addr;
             n++;
             break;
          }
@@ -925,7 +1032,7 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
                // that's not interesting.
                addMemEvent( sbOut, False/*!isWrite*/,
                             sizeofIRType(data->Iex.Load.ty),
-                            aexpr, goff_sp );
+                            aexpr, goff_sp, ip );
             }
             break;
          }
@@ -933,9 +1040,9 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
          case Ist_Store: {
             IRExpr* data  = st->Ist.Store.data;
             IRExpr* aexpr = st->Ist.Store.addr;
-            addMemEvent( sbOut, True/*isWrite*/, 
+            addMemEvent( sbOut, True/*isWrite*/,
                          sizeofIRType(typeOfIRExpr(tyenv, data)),
-                         aexpr, goff_sp );
+                         aexpr, goff_sp, ip );
             break;
          }
 
@@ -953,10 +1060,10 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
                // than two cache lines in the simulation.
                if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify)
                   addMemEvent( sbOut, False/*!isWrite*/,
-                               dataSize, d->mAddr, goff_sp );
+                               dataSize, d->mAddr, goff_sp, ip );
                if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify)
                   addMemEvent( sbOut, True/*isWrite*/,
-                               dataSize, d->mAddr, goff_sp );
+                               dataSize, d->mAddr, goff_sp, ip );
             } else {
                tl_assert(d->mAddr == NULL);
                tl_assert(d->mSize == 0);
@@ -978,9 +1085,9 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
             if (cas->dataHi != NULL)
                dataSize *= 2; /* since it's a doubleword-CAS */
             addMemEvent( sbOut, False/*!isWrite*/,
-                         dataSize, cas->addr, goff_sp );
+                         dataSize, cas->addr, goff_sp, ip );
             addMemEvent( sbOut, True/*isWrite*/,
-                         dataSize, cas->addr, goff_sp );
+                         dataSize, cas->addr, goff_sp, ip );
             break;
          }
 
@@ -991,13 +1098,13 @@ IRSB* dh_instrument ( VgCallbackClosure* closure,
                dataTy = typeOfIRTemp(tyenv, st->Ist.LLSC.result);
                addMemEvent( sbOut, False/*!isWrite*/,
                             sizeofIRType(dataTy),
-                            st->Ist.LLSC.addr, goff_sp );
+                            st->Ist.LLSC.addr, goff_sp, ip );
             } else {
                /* SC */
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                addMemEvent( sbOut, True/*isWrite*/,
                             sizeofIRType(dataTy),
-                            st->Ist.LLSC.addr, goff_sp );
+                            st->Ist.LLSC.addr, goff_sp, ip );
             }
             break;
          }
@@ -1219,7 +1326,7 @@ static void show_top_n_apinfos ( void )
 
    VG_(umsg)("\n");
    VG_(umsg)("======== ORDERED BY %s \"%s\": "
-             "top %d allocators ========\n", 
+             "top %d allocators ========\n",
              increasing ? "increasing" : "decreasing",
              metric_name, clo_show_top_n );
 
@@ -1232,7 +1339,7 @@ static void show_top_n_apinfos ( void )
    }
    VG_(doneIterFM)( apinfo );
 
-   // Now print the top N entries.  Each one requires a 
+   // Now print the top N entries.  Each one requires a
    // complete scan of the set.  Duh.
    for (i = 0; i < clo_show_top_n; i++) {
       ULong   best_metric = increasing ? ~0ULL : 0ULL;
